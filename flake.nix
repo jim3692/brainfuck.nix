@@ -17,13 +17,25 @@
           program = "${run}/bin/run";
         };
 
-      textToBytes = text: with pkgs; (lib.importJSON (runCommand "textToBytes" { } ''
-        ${nodejs}/bin/node -e "console.log(require('fs').readFileSync('${builtins.toFile "input" text}', 'utf8').split('${""}').map(c => c.charCodeAt(0)))" >$out
-      '')) ++ [ 0 ];
+      io = rec {
+        bytesToTextBin = pkgs.writeCBin "bytesToTextBin" (builtins.readFile ./io/bytes-to-text.c);
+        bytesToText = bytes: with pkgs;
+          let
+            input = builtins.toFile "input" (lib.concatMapStringsSep "\n" (b: toString b) bytes);
+            result = runCommand "bytesToText" { } "(echo '${toString (builtins.length bytes)}' ; cat '${input}') | ${bytesToTextBin}/bin/bytesToTextBin >$out";
+          in
+            builtins.readFile result;
 
-      bytesToText = bytes: with pkgs; builtins.readFile (runCommand "bytesToText" { } ''
-        echo -ne "$(${nodejs}/bin/node -e "console.log(String.fromCharCode(...${builtins.toJSON bytes}))")" >$out
-      '');
+        textToBytesBin = pkgs.writeCBin "textToBytesBin" (builtins.readFile ./io/text-to-bytes.c);
+        textToBytes = text: with pkgs;
+          let
+            input = builtins.toFile "input" text;
+            result = runCommand "textToBytes" { } "(cat '${input}' ; echo -ne '\\0') | ${textToBytesBin}/bin/textToBytesBin >$out";
+            lines = lib.splitString "\n" (builtins.readFile result);
+            nonEmptyLines = builtins.filter (l: l != "") lines;
+          in
+            builtins.map (b: lib.toInt b) nonEmptyLines;
+      };
 
       brainfuck = import ./brainfuck.nix pkgs.lib;
     in {
@@ -32,7 +44,7 @@
           let
             code = builtins.readFile ./examples/hello-world.bf;
             inherit (brainfuck { inherit code; }) output;
-            resultsFile = builtins.toFile "result" (bytesToText output);
+            resultsFile = builtins.toFile "result" (io.bytesToText output);
           in getApp ''
             cat ${resultsFile} ; echo
           '';
@@ -41,7 +53,7 @@
           let
             INPUT = "56"; # 5 * 6
             code = builtins.readFile ./examples/multiplication.bf;
-            inherit (brainfuck { inherit code; input = textToBytes INPUT; }) output;
+            inherit (brainfuck { inherit code; input = io.textToBytes INPUT; }) output;
             resultsFile = builtins.toFile "result" (toString output); # the result is an 8-bit int, not a string
           in getApp ''
             cat ${resultsFile} ; echo
@@ -51,9 +63,9 @@
           let
             INPUT = "Hello World!";
             code = builtins.readFile ./examples/echo.bf;
-            result = brainfuck { inherit code; input = textToBytes INPUT; };
+            result = brainfuck { inherit code; input = (io.textToBytes INPUT) ++ [ 0 ]; }; # Loop until \0
             inherit (result) output;
-            resultsFile = builtins.toFile "result" (bytesToText output);
+            resultsFile = builtins.toFile "result" (io.bytesToText output);
           in getApp ''
             cat ${resultsFile} ; echo
           '';
